@@ -1,16 +1,15 @@
 # Keelson Go SDK
 
-Go SDK for building apps on the Keelson platform. Provides five packages:
+Go SDK for building apps on the Keelson platform. Provides four packages:
 
 > **Note**: This repository is a read-only release mirror. Development happens in the private Keelson monorepo; issues are welcome here, but pull requests are not accepted — changes land through the next release.
 
 | Package | Import path | Description |
 |---------|-------------|-------------|
 | `identity` | `github.com/keelsonhq/go-sdk/identity` | Authenticated user identity |
-| `directory` | `github.com/keelsonhq/go-sdk/directory` | Tenant member and group directory |
+| `directory` | `github.com/keelsonhq/go-sdk/directory` | Workspace member and group directory |
 | `media` | `github.com/keelsonhq/go-sdk/media` | Media storage (upload, serve by ID) |
 | `files` | `github.com/keelsonhq/go-sdk/files` | Data files (key-addressed, overwrite, private) |
-| `email` | `github.com/keelsonhq/go-sdk/email` | Outbound email and inbound webhooks |
 
 Cross-language parity across Node, Python, and Go is defined by the
 [cross-SDK parity contract shipped in this repo](./PARITY.md). APIs below are
@@ -32,7 +31,7 @@ Import only the packages you need.
 Get the authenticated user's identity. In production, the Keelson auth gateway
 injects trusted `X-Keelson-User-*` headers before requests reach the app.
 Use `GetCurrentUser` when the basic user profile is enough; use
-`GetCurrentIdentity` when the app needs tenant role, app permissions, app
+`GetCurrentIdentity` when the app needs workspace role, app permissions, app
 roles, or group attributes.
 
 ```go
@@ -56,7 +55,7 @@ current, err := client.GetCurrentIdentity(
     identity.WithHost(r.Host),
 )
 if err != nil { /* ... */ }
-fmt.Println(current.Tenant.Role)
+fmt.Println(current.Workspace.Role)
 fmt.Println(current.App.Permissions) // ["manage", "view"]
 ```
 
@@ -92,11 +91,11 @@ trusted headers and rejects explicit `WithCookie`.
 ### Migration note
 
 `GetCurrentUser` no longer forwards browser cookies to `/__keelson/user` and no
-longer returns tenant/app authorization fields. Replace old
+longer returns workspace/app authorization fields. Replace old
 `GetCurrentUser(WithCookie(...), WithHost(...))` calls with
 `GetCurrentUser(WithHeaders(r.Header))` for basic user fields, or
 `GetCurrentIdentity(WithHeaders(r.Header), WithAppToken(...), WithHost(r.Host))`
-when you need `Tenant.Role`, `App.Permissions`, `App.Roles`, or
+when you need `Workspace.Role`, `App.Permissions`, `App.Roles`, or
 `Attributes.Groups`.
 
 ### Modes
@@ -117,18 +116,23 @@ when you need `Tenant.Role`, `App.Permissions`, `App.Roles`, or
 | `KEELSON_LOCAL_USER_ID` | Override local user ID (default: `local-user-001`) |
 | `KEELSON_LOCAL_USER_EMAIL` | Override local user email (default: `dev@localhost`) |
 | `KEELSON_LOCAL_USER_NAME` | Override local user name (default: `Local Developer`) |
-| `KEELSON_LOCAL_TENANT_ID` | Override local tenant ID (default: `local-tenant-001`) |
-| `KEELSON_LOCAL_TENANT_ROLE` | Override local tenant role (default: `OWNER`) |
+| `KEELSON_LOCAL_WORKSPACE_ID` | Override local workspace ID (the compatibility-preserving default remains `local-tenant-001`) |
+| `KEELSON_LOCAL_WORKSPACE_ROLE` | Override local workspace role (default: `OWNER`) |
 | `KEELSON_LOCAL_APP_ID` | Override local app ID (default: `local-app-001`) |
 
 `KEELSON_IDENTITY_BASE_URL` is a deprecated alias, but it still works as a
 fallback; new code should use `KEELSON_DIRECTORY_BASE_URL`.
 
+The former `TenantIdentity` type, `CurrentIdentity.Tenant` field, `tenant` wire
+key, `KEELSON_TENANT_ID`, and `KEELSON_LOCAL_TENANT_ID` /
+`KEELSON_LOCAL_TENANT_ROLE` remain deprecated aliases through at least the next
+major SDK version.
+
 ---
 
 ## Directory
 
-Lookup tenant members and groups. Same forwarding pattern as Identity.
+Lookup workspace members and groups. Same forwarding pattern as Identity.
 Supports `KEELSON_LOCAL_MODE` with the same fixture data and env overrides.
 
 ```go
@@ -207,9 +211,9 @@ UUID.
 | Method | Description |
 |--------|-------------|
 | `New(baseURL) (*Client, error)` | Create client (local mode, or `KEELSON_DIRECTORY_BASE_URL` → `KEELSON_IDENTITY_BASE_URL`) |
-| `ListMembers(params, opts...) (*PaginatedMembers, error)` | List tenant members (paginated, filterable) |
+| `ListMembers(params, opts...) (*PaginatedMembers, error)` | List workspace members (paginated, filterable) |
 | `GetUser(userID, opts...) (*MemberItem, error)` | Get user by ID |
-| `ListGroups(opts...) ([]GroupItem, error)` | List tenant groups |
+| `ListGroups(opts...) ([]GroupItem, error)` | List workspace groups |
 | `WithAppToken(token) RequestOption` | App-as-actor Directory access via `Authorization: Bearer <token>` |
 
 ### Go-specific helpers
@@ -226,7 +230,7 @@ UUID.
 | `KEELSON_DIRECTORY_TOKEN` | App token for app-as-actor Directory access; used when no `WithAppToken` / `WithAuthorization` / `WithCookie` is given |
 | `KEELSON_IDENTITY_BASE_URL` | **Deprecated** compatibility fallback for the base URL; new code should use `KEELSON_DIRECTORY_BASE_URL` |
 | `KEELSON_LOCAL_MODE` | Set to `1`, `true`, or `yes` to use fixture data |
-| `KEELSON_LOCAL_USER_*` / `KEELSON_LOCAL_TENANT_*` / `KEELSON_LOCAL_APP_*` | Same overrides as Identity |
+| `KEELSON_LOCAL_USER_*` / `KEELSON_LOCAL_WORKSPACE_*` / `KEELSON_LOCAL_APP_*` | Same overrides as Identity |
 
 ---
 
@@ -306,7 +310,7 @@ err = client.Delete(fileID)
 | any | Exactly one of base URL / token set | **`ErrConfig`** — incomplete remote config |
 | `local` | — | Local filesystem (`MEDIA_DIR`, default `./media`) |
 | unset | Both Media env set | Remote (backward compatibility) |
-| unset | No Media env, platform core env visible (`KEELSON_APP_ID` / `KEELSON_TENANT_ID` / `KEELSON_DEPLOY_ID`) | **`ErrConfig`** — refuses silent local fallback |
+| unset | No Media env, platform core env visible (`KEELSON_APP_ID` / `KEELSON_WORKSPACE_ID` / `KEELSON_DEPLOY_ID`) | **`ErrConfig`** — refuses silent local fallback |
 | unset | No Media env, no platform env | Local filesystem (local development) |
 
 The SDK never silently falls back to ephemeral local storage on Keelson: set
@@ -372,70 +376,6 @@ missing config returns an error wrapping `files.ErrConfig`. See the
 
 ---
 
-## Email
-
-Send emails and receive inbound email via webhooks.
-
-```go
-import "github.com/keelsonhq/go-sdk/email"
-
-client, err := email.New("", "") // reads env vars
-if err != nil { /* ... */ }
-
-// Send
-textBody := "Plain text body"
-htmlBody := "<p>HTML body</p>"
-resp, err := client.Send(&email.SendRequest{
-    To:      []string{"user@example.com"},
-    Subject: "Hello",
-    Text:    &textBody,
-    HTML:    &htmlBody,
-})
-fmt.Println(resp.SendID, resp.Status)
-
-// Verify inbound webhook (in HTTP handler)
-msg, err := email.VerifyWebhook(r, webhookSecret)
-fmt.Println(msg.Subject, msg.From.Address)
-
-// Download attachment
-att, err := client.DownloadAttachment(msg.Attachments[0].ID)
-defer att.Body.Close()
-
-// Verify event webhook (bounce/complaint/delivery)
-event, err := email.VerifyEventWebhook(r, webhookSecret)
-if event.EventType == "bounce" {
-    fmt.Println("Bounced:", event.EmailAddress)
-}
-```
-
-### Cross-language guaranteed API
-
-| Method | Description |
-|--------|-------------|
-| `New(baseURL, token) (*Client, error)` | Create client (falls back to env vars) |
-| `Send(req) (*SendResponse, error)` | Send an email |
-| `DownloadAttachment(id) (*AttachmentContent, error)` | Download attachment by ID |
-| `email.VerifyWebhook(r, secret) (*InboundEmail, error)` | Verify Svix signature and parse inbound email |
-| `email.VerifyWebhookBytes(body, headers, secret) (*InboundEmail, error)` | Verify inbound email from pre-read body |
-| `email.VerifyEventWebhook(r, secret) (*EmailEventPayload, error)` | Verify Svix signature and parse event |
-| `email.VerifyEventWebhookBytes(body, headers, secret) (*EmailEventPayload, error)` | Verify event from pre-read body |
-
-### Go-specific helpers
-
-| Method | Description |
-|--------|-------------|
-| `SendCtx(ctx, req) (*SendResponse, error)` | Send with context |
-| `DownloadAttachmentCtx(ctx, id) (*AttachmentContent, error)` | Download with context |
-
-### Environment variables
-
-| Variable | Description |
-|----------|-------------|
-| `KEELSON_EMAIL_API_URL` | Email API endpoint (required) |
-| `KEELSON_EMAIL_TOKEN` | Bearer token (required) |
-
----
-
 ## Development
 
 ```bash
@@ -446,7 +386,6 @@ go test ./...
 go test ./media/
 go test ./identity/
 go test ./directory/
-go test ./email/
 
 # Build check (verify compilation)
 go build ./...

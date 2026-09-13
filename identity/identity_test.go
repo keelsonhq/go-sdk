@@ -71,10 +71,11 @@ func TestGetCurrentUser_MissingHeader(t *testing.T) {
 
 func TestGetCurrentIdentity(t *testing.T) {
 	fullResponse := map[string]any{
-		"user":   map[string]any{"id": "u-1", "email": "a@b.com", "name": "Alice"},
-		"tenant": map[string]any{"id": "t-1", "role": "OWNER"},
-		"app":    map[string]any{"id": "app-1", "permissions": []string{"manage"}, "roles": []string{"editor"}},
-		"authz":  map[string]any{"version": 3},
+		"user":      map[string]any{"id": "u-1", "email": "a@b.com", "name": "Alice"},
+		"workspace": map[string]any{"id": "w-1", "role": "OWNER"},
+		"tenant":    map[string]any{"id": "ignored", "role": "APP_USER"},
+		"app":       map[string]any{"id": "app-1", "permissions": []string{"manage"}, "roles": []string{"editor"}},
+		"authz":     map[string]any{"version": 3},
 		"attributes": map[string]any{
 			"groups": []string{"developers", "everyone"},
 		},
@@ -120,14 +121,31 @@ func TestGetCurrentIdentity(t *testing.T) {
 	if ci.User.ID != "u-1" {
 		t.Errorf("User.ID = %q, want u-1", ci.User.ID)
 	}
-	if ci.Tenant.Role != "OWNER" {
-		t.Errorf("Tenant.Role = %q, want OWNER", ci.Tenant.Role)
+	if ci.Workspace.ID != "w-1" || ci.Workspace.Role != "OWNER" {
+		t.Errorf("Workspace = %#v, want w-1/OWNER", ci.Workspace)
+	}
+	if ci.Tenant != ci.Workspace {
+		t.Errorf("Tenant = %#v, want workspace alias %#v", ci.Tenant, ci.Workspace)
 	}
 	if len(ci.App.Permissions) != 1 || ci.App.Permissions[0] != "manage" {
 		t.Errorf("App.Permissions = %v, want [manage]", ci.App.Permissions)
 	}
 	if ci.Attributes == nil || len(ci.Attributes.Groups) != 2 {
 		t.Errorf("Attributes.Groups = %v, want 2 groups", ci.Attributes)
+	}
+	wire, err := json.Marshal(ci)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var aliases struct {
+		Workspace identity.WorkspaceIdentity `json:"workspace"`
+		Tenant    identity.TenantIdentity    `json:"tenant"`
+	}
+	if err := json.Unmarshal(wire, &aliases); err != nil {
+		t.Fatalf("Unmarshal marshaled identity: %v", err)
+	}
+	if aliases.Workspace != aliases.Tenant || aliases.Workspace.ID != "w-1" {
+		t.Errorf("marshaled aliases = %#v, want identical canonical value", aliases)
 	}
 }
 
@@ -241,13 +259,13 @@ func TestGetCurrentIdentity_MalformedResponses(t *testing.T) {
 	}{
 		{name: "empty object", response: map[string]any{}, wantMsg: "missing 'user'"},
 		{
-			name: "missing tenant",
+			name: "missing workspace aliases",
 			response: map[string]any{
 				"user":  map[string]any{"id": "u-1", "email": "a@b.com", "name": "A"},
 				"app":   map[string]any{"id": "app-1", "permissions": []string{}, "roles": []string{}},
 				"authz": map[string]any{"version": 1},
 			},
-			wantMsg: "missing 'tenant'",
+			wantMsg: "missing 'workspace'",
 		},
 		{
 			name: "missing app.permissions",

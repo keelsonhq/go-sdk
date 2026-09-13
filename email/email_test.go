@@ -31,6 +31,7 @@ func newTestClient(t *testing.T, url string) *email.Client {
 // --- Constructor ---
 
 func TestNew_RequiresBaseURL(t *testing.T) {
+	t.Setenv("KEELSON_EMAIL_BASE_URL", "")
 	t.Setenv("KEELSON_EMAIL_API_URL", "")
 	_, err := email.New("", "tok")
 	if err == nil {
@@ -47,6 +48,7 @@ func TestNew_RequiresToken(t *testing.T) {
 }
 
 func TestNew_EnvFallback(t *testing.T) {
+	t.Setenv("KEELSON_EMAIL_BASE_URL", "")
 	t.Setenv("KEELSON_EMAIL_API_URL", "http://env-host")
 	t.Setenv("KEELSON_EMAIL_TOKEN", "env-token")
 	c, err := email.New("", "")
@@ -56,6 +58,134 @@ func TestNew_EnvFallback(t *testing.T) {
 	if c == nil {
 		t.Fatal("expected non-nil client")
 	}
+}
+
+func TestNew_GatewayBaseURL(t *testing.T) {
+	text := "Hello"
+	paths := make([]string, 0, 2)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if got := r.Header.Get("Authorization"); got != "Bearer env-token" {
+			t.Errorf("Authorization = %q, want Bearer env-token", got)
+		}
+		switch r.URL.Path {
+		case "/__keelson/email/send":
+			if r.Method != http.MethodPost {
+				t.Errorf("method = %q, want POST", r.Method)
+			}
+			if got := r.Header.Get("Content-Type"); got != "application/json" {
+				t.Errorf("Content-Type = %q, want application/json", got)
+			}
+			var body email.SendRequest
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode body: %v", err)
+			}
+			if len(body.To) != 1 || body.To[0] != "user@example.com" || body.Subject != "Test" {
+				t.Errorf("unexpected send body: %+v", body)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			json.NewEncoder(w).Encode(map[string]string{"send_id": "send_1", "status": "queued"})
+		case "/__keelson/email/attachments/att_gateway_id":
+			if r.Method != http.MethodGet {
+				t.Errorf("method = %q, want GET", r.Method)
+			}
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("attachment"))
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer ts.Close()
+
+	t.Setenv("KEELSON_EMAIL_BASE_URL", "  "+ts.URL+"///  ")
+	t.Setenv("KEELSON_EMAIL_API_URL", "http://legacy.invalid")
+	t.Setenv("KEELSON_EMAIL_TOKEN", "env-token")
+	client, err := email.New("", "")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := client.Send(&email.SendRequest{
+		To: []string{"user@example.com"}, Subject: "Test", Text: &text,
+	}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	attachment, err := client.DownloadAttachment("att_gateway_id")
+	if err != nil {
+		t.Fatalf("DownloadAttachment: %v", err)
+	}
+	attachment.Body.Close()
+
+	want := []string{
+		"/__keelson/email/send",
+		"/__keelson/email/attachments/att_gateway_id",
+	}
+	if fmt.Sprint(paths) != fmt.Sprint(want) {
+		t.Errorf("paths = %v, want %v", paths, want)
+	}
+}
+
+func TestNew_EmptyGatewayBaseFallsBackToLegacy(t *testing.T) {
+	for _, gatewayBase := range []string{"", "   "} {
+		t.Run(fmt.Sprintf("base_%q", gatewayBase), func(t *testing.T) {
+			text := "Hello"
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/email/send" {
+					t.Errorf("path = %q, want /v1/email/send", r.URL.Path)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]string{"send_id": "send_1", "status": "queued"})
+			}))
+			defer ts.Close()
+
+			t.Setenv("KEELSON_EMAIL_BASE_URL", gatewayBase)
+			t.Setenv("KEELSON_EMAIL_API_URL", ts.URL)
+			client, err := email.New("", "token")
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			if _, err := client.Send(&email.SendRequest{
+				To: []string{"user@example.com"}, Subject: "Test", Text: &text,
+			}); err != nil {
+				t.Fatalf("Send: %v", err)
+			}
+		})
+	}
+}
+
+func TestNew_ExplicitBaseAlwaysUsesLegacyPaths(t *testing.T) {
+	text := "Hello"
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/email/send":
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"send_id": "send_1", "status": "queued"})
+		case "/v1/email/attachments/att_explicit_id":
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("attachment"))
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer ts.Close()
+
+	t.Setenv("KEELSON_EMAIL_BASE_URL", "http://gateway.must-not-be-used")
+	client, err := email.New(ts.URL, "token")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := client.Send(&email.SendRequest{
+		To: []string{"user@example.com"}, Subject: "Test", Text: &text,
+	}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	attachment, err := client.DownloadAttachment("att_explicit_id")
+	if err != nil {
+		t.Fatalf("DownloadAttachment: %v", err)
+	}
+	attachment.Body.Close()
 }
 
 // --- Send ---
@@ -187,6 +317,21 @@ func TestSend_RequestBody(t *testing.T) {
 	replyTo := "reply@example.com"
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %q, want POST", r.Method)
+		}
+		if r.URL.Path != "/v1/email/send" {
+			t.Errorf("path = %q, want /v1/email/send", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+			t.Errorf("Authorization = %q, want Bearer test-token", got)
+		}
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Errorf("Content-Type = %q, want application/json", got)
+		}
+		if got := r.Header.Get("Accept"); got != "" {
+			t.Errorf("Accept = %q, want empty", got)
+		}
 		var body map[string]any
 		json.NewDecoder(r.Body).Decode(&body)
 
@@ -277,6 +422,43 @@ func TestSend_WithContext(t *testing.T) {
 	}
 }
 
+func TestSend_LegacyErrorAndContextContract(t *testing.T) {
+	text := "Hello"
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"detail":"invalid token"}`))
+	}))
+	defer ts.Close()
+
+	client := newTestClient(t, ts.URL)
+	_, err := client.Send(&email.SendRequest{
+		To: []string{"user@example.com"}, Subject: "Test", Text: &text,
+	})
+	want := "email.Send: POST " + ts.URL +
+		`/v1/email/send failed with 401: {"detail":"invalid token"}`
+	if err == nil || err.Error() != want {
+		t.Fatalf("error = %v, want %q", err, want)
+	}
+	var apiErr *httpclient.APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected wrapped *APIError, got %T", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = client.SendCtx(ctx, &email.SendRequest{
+		To: []string{"user@example.com"}, Subject: "Test", Text: &text,
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	want = "email.Send: POST " + ts.URL + "/v1/email/send: Post \"" +
+		ts.URL + "/v1/email/send\": context canceled"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err, want)
+	}
+}
+
 // --- DownloadAttachment ---
 
 func TestDownloadAttachment(t *testing.T) {
@@ -291,6 +473,19 @@ func TestDownloadAttachment(t *testing.T) {
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
 			t.Errorf("Authorization = %q, want Bearer test-token", got)
+		}
+		if got := r.Header.Get("Content-Type"); got != "" {
+			t.Errorf("Content-Type = %q, want empty", got)
+		}
+		if got := r.Header.Get("Accept"); got != "" {
+			t.Errorf("Accept = %q, want empty", got)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		if len(body) != 0 {
+			t.Errorf("body = %q, want empty", body)
 		}
 		w.Header().Set("Content-Type", "application/pdf")
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(fileContent)))
@@ -352,6 +547,32 @@ func TestDownloadAttachment_NotFound(t *testing.T) {
 	}
 	if apiErr.StatusCode != 404 {
 		t.Errorf("StatusCode = %d, want 404", apiErr.StatusCode)
+	}
+	want := "email.DownloadAttachment: GET " + ts.URL +
+		`/v1/email/attachments/att_550e8400-e29b-41d4-a716-446655440000 failed with 404: {"detail":"Attachment not found."}`
+	if err.Error() != want {
+		t.Errorf("error = %q, want %q", err, want)
+	}
+}
+
+func TestDownloadAttachment_LegacyContextContract(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	client := newTestClient(t, ts.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := client.DownloadAttachmentCtx(ctx, "att_1")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	want := "email.DownloadAttachment: GET " + ts.URL +
+		"/v1/email/attachments/att_1: Get \"" + ts.URL +
+		"/v1/email/attachments/att_1\": context canceled"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err, want)
 	}
 }
 

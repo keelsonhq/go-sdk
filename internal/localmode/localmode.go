@@ -44,11 +44,21 @@ func UserEmail() string { return Env("KEELSON_LOCAL_USER_EMAIL", DefaultUserEmai
 // UserName returns the configured local user name.
 func UserName() string { return Env("KEELSON_LOCAL_USER_NAME", DefaultUserName) }
 
-// TenantID returns the configured local tenant ID.
-func TenantID() string { return Env("KEELSON_LOCAL_TENANT_ID", DefaultTenantID) }
+// TenantID returns the configured local workspace ID, falling back to its legacy alias.
+func TenantID() string {
+	if value := strings.TrimSpace(os.Getenv("KEELSON_LOCAL_WORKSPACE_ID")); value != "" {
+		return value
+	}
+	return Env("KEELSON_LOCAL_TENANT_ID", DefaultTenantID)
+}
 
-// TenantRole returns the configured local tenant role.
-func TenantRole() string { return Env("KEELSON_LOCAL_TENANT_ROLE", DefaultTenantRole) }
+// TenantRole returns the configured local workspace role, falling back to its legacy alias.
+func TenantRole() string {
+	if value := strings.TrimSpace(os.Getenv("KEELSON_LOCAL_WORKSPACE_ROLE")); value != "" {
+		return value
+	}
+	return Env("KEELSON_LOCAL_TENANT_ROLE", DefaultTenantRole)
+}
 
 // AppID returns the configured local app ID.
 func AppID() string { return Env("KEELSON_LOCAL_APP_ID", DefaultAppID) }

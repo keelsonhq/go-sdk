@@ -14,7 +14,7 @@ import (
 	"github.com/keelsonhq/go-sdk/internal/localmode"
 )
 
-// MemberItem represents a tenant member.
+// MemberItem represents a workspace member.
 type MemberItem struct {
 	ID    string `json:"id"`
 	Email string `json:"email"`
@@ -30,7 +30,7 @@ type PaginatedMembers struct {
 	NextOffset *int         `json:"next_offset"`
 }
 
-// GroupItem represents a tenant group.
+// GroupItem represents a workspace group.
 //
 // Key is the human-readable identifier for referencing a group from code:
 // it is always present (the server guarantees a non-null, normalized key),

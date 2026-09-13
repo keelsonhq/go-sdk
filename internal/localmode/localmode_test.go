@@ -141,3 +141,17 @@ func TestEnvOverrides(t *testing.T) {
 		t.Errorf("AppID() = %q", AppID())
 	}
 }
+
+func TestWorkspaceEnvOverridesTenantAlias(t *testing.T) {
+	t.Setenv("KEELSON_LOCAL_WORKSPACE_ID", "workspace-id")
+	t.Setenv("KEELSON_LOCAL_TENANT_ID", "tenant-id")
+	t.Setenv("KEELSON_LOCAL_WORKSPACE_ROLE", "OWNER")
+	t.Setenv("KEELSON_LOCAL_TENANT_ROLE", "BUILDER")
+
+	if TenantID() != "workspace-id" {
+		t.Errorf("TenantID() = %q", TenantID())
+	}
+	if TenantRole() != "OWNER" {
+		t.Errorf("TenantRole() = %q", TenantRole())
+	}
+}

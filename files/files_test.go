@@ -644,9 +644,22 @@ func TestRemoteSizeLimitBeforeUpload(t *testing.T) {
 // Mode resolution (fail-closed)
 // ---------------------------------------------------------------------------
 
+const (
+	missingIdentityMessage = "files: KEELSON_MODE=keelson but the platform identity is missing " +
+		"(KEELSON_APP_ID and KEELSON_WORKSPACE_ID must be set; " +
+		"KEELSON_TENANT_ID remains a deprecated alias); " +
+		"the Files capability is unavailable for this deployment"
+	refuseFallbackMessage = "files: platform environment detected " +
+		"(KEELSON_APP_ID / KEELSON_WORKSPACE_ID (or deprecated " +
+		"KEELSON_TENANT_ID alias) / KEELSON_DEPLOY_ID set) but " +
+		"KEELSON_MODE is unset; refusing to fall back to local storage. " +
+		"Set KEELSON_MODE=local for local development or KEELSON_MODE=keelson " +
+		"for platform storage"
+)
+
 func cleanEnv(t *testing.T) {
 	t.Helper()
-	for _, k := range []string{"KEELSON_MODE", "KEELSON_APP_ID", "KEELSON_TENANT_ID",
+	for _, k := range []string{"KEELSON_MODE", "KEELSON_APP_ID", "KEELSON_WORKSPACE_ID", "KEELSON_TENANT_ID",
 		"KEELSON_DEPLOY_ID", "KEELSON_FILES_BUCKET", "KEELSON_FILES_PREFIX"} {
 		t.Setenv(k, "")
 	}
@@ -659,6 +672,19 @@ func TestModeKeelsonWithEnv(t *testing.T) {
 	t.Setenv("KEELSON_FILES_PREFIX", "tenants/t/apps/a/files/")
 	t.Setenv("KEELSON_APP_ID", "a")
 	t.Setenv("KEELSON_TENANT_ID", "t")
+	c, err := New()
+	if err != nil || c.IsLocal() {
+		t.Fatalf("expected remote client, err=%v local=%v", err, c != nil && c.IsLocal())
+	}
+}
+
+func TestModeKeelsonWithWorkspaceEnv(t *testing.T) {
+	cleanEnv(t)
+	t.Setenv("KEELSON_MODE", "keelson")
+	t.Setenv("KEELSON_FILES_BUCKET", "b")
+	t.Setenv("KEELSON_FILES_PREFIX", "workspaces/w/apps/a/files/")
+	t.Setenv("KEELSON_APP_ID", "a")
+	t.Setenv("KEELSON_WORKSPACE_ID", "w")
 	c, err := New()
 	if err != nil || c.IsLocal() {
 		t.Fatalf("expected remote client, err=%v local=%v", err, c != nil && c.IsLocal())
@@ -679,8 +705,8 @@ func TestModeKeelsonMissingIdentityFailsClosed(t *testing.T) {
 	t.Setenv("KEELSON_FILES_BUCKET", "b")
 	t.Setenv("KEELSON_FILES_PREFIX", "tenants/t/apps/a/files/")
 	_, err := New()
-	if !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "platform identity is missing") {
-		t.Fatalf("expected identity-missing config error, got %v", err)
+	if !errors.Is(err, ErrConfig) || err.Error() != missingIdentityMessage {
+		t.Fatalf("identity-missing error = %v, want %q", err, missingIdentityMessage)
 	}
 }
 
@@ -724,11 +750,11 @@ func TestModeZeroConfigLocal(t *testing.T) {
 }
 
 func TestModeRefuseFallbackOnPlatform(t *testing.T) {
-	for _, v := range []string{"KEELSON_APP_ID", "KEELSON_TENANT_ID", "KEELSON_DEPLOY_ID"} {
+	for _, v := range []string{"KEELSON_APP_ID", "KEELSON_WORKSPACE_ID", "KEELSON_TENANT_ID", "KEELSON_DEPLOY_ID"} {
 		cleanEnv(t)
 		t.Setenv(v, "x")
-		if _, err := New(); !errors.Is(err, ErrConfig) {
-			t.Fatalf("%s set: expected ErrConfig, got %v", v, err)
+		if _, err := New(); !errors.Is(err, ErrConfig) || err.Error() != refuseFallbackMessage {
+			t.Fatalf("%s set: error = %v, want %q", v, err, refuseFallbackMessage)
 		}
 	}
 }

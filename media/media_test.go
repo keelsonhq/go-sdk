@@ -459,7 +459,8 @@ const (
 		"(KEELSON_INTERNAL_MEDIA_BASE_URL and KEELSON_APP_MEDIA_TOKEN are unset); " +
 		"the Media capability is unavailable for this deployment"
 	msgRefuseFallback = "media: platform environment detected " +
-		"(KEELSON_APP_ID / KEELSON_TENANT_ID / KEELSON_DEPLOY_ID set) but Media is " +
+		"(KEELSON_APP_ID / KEELSON_WORKSPACE_ID (or deprecated KEELSON_TENANT_ID alias) / " +
+		"KEELSON_DEPLOY_ID set) but Media is " +
 		"not configured; refusing to fall back to local storage. " +
 		"Set KEELSON_MODE=local for local development"
 )
@@ -469,7 +470,7 @@ const (
 func clearModeEnv(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{
-		"KEELSON_MODE", "KEELSON_APP_ID", "KEELSON_TENANT_ID", "KEELSON_DEPLOY_ID",
+		"KEELSON_MODE", "KEELSON_APP_ID", "KEELSON_WORKSPACE_ID", "KEELSON_TENANT_ID", "KEELSON_DEPLOY_ID",
 		"KEELSON_INTERNAL_MEDIA_BASE_URL", "KEELSON_APP_MEDIA_TOKEN",
 	} {
 		t.Setenv(k, "")
@@ -606,7 +607,7 @@ func TestNew_ExplicitLocalMode(t *testing.T) {
 // silent local fallback rather than write ephemeral files on Keelson. Every
 // core identifier (APP_ID / TENANT_ID / DEPLOY_ID) independently triggers this.
 func TestNew_PlatformEnvVisible_RefusesLocalFallback(t *testing.T) {
-	for _, envKey := range []string{"KEELSON_APP_ID", "KEELSON_TENANT_ID", "KEELSON_DEPLOY_ID"} {
+	for _, envKey := range []string{"KEELSON_APP_ID", "KEELSON_WORKSPACE_ID", "KEELSON_TENANT_ID", "KEELSON_DEPLOY_ID"} {
 		t.Run(envKey, func(t *testing.T) {
 			clearModeEnv(t)
 			t.Setenv(envKey, "id_123")

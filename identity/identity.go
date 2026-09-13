@@ -20,11 +20,16 @@ type UserIdentity struct {
 	Name  *string `json:"name"`
 }
 
-// TenantIdentity holds the tenant context of the current request.
-type TenantIdentity struct {
+// WorkspaceIdentity holds the workspace context of the current request.
+type WorkspaceIdentity struct {
 	ID   string `json:"id"`
 	Role string `json:"role"`
 }
+
+// TenantIdentity is the deprecated name for WorkspaceIdentity.
+//
+// Deprecated: use WorkspaceIdentity.
+type TenantIdentity = WorkspaceIdentity
 
 // AppIdentity holds the app context and authorization info.
 type AppIdentity struct {
@@ -40,11 +45,35 @@ type Attributes struct {
 
 // CurrentIdentity is the full response from GET /__keelson/user.
 type CurrentIdentity struct {
-	User       UserIdentity   `json:"user"`
+	User      UserIdentity      `json:"user"`
+	Workspace WorkspaceIdentity `json:"workspace"`
+	// Tenant is retained as an alias through at least the next major version.
+	// Deprecated: use Workspace.
 	Tenant     TenantIdentity `json:"tenant"`
 	App        AppIdentity    `json:"app"`
 	Authz      *authzInfo     `json:"authz,omitempty"`
 	Attributes *Attributes    `json:"attributes,omitempty"`
+}
+
+// MarshalJSON emits both names from one selected value so the canonical
+// workspace field and deprecated tenant alias cannot drift on the wire.
+func (i CurrentIdentity) MarshalJSON() ([]byte, error) {
+	workspace := i.Workspace
+	if workspace == (WorkspaceIdentity{}) {
+		workspace = i.Tenant
+	}
+	type identityJSON struct {
+		User       UserIdentity      `json:"user"`
+		Workspace  WorkspaceIdentity `json:"workspace"`
+		Tenant     WorkspaceIdentity `json:"tenant"`
+		App        AppIdentity       `json:"app"`
+		Authz      *authzInfo        `json:"authz,omitempty"`
+		Attributes *Attributes       `json:"attributes,omitempty"`
+	}
+	return json.Marshal(identityJSON{
+		User: i.User, Workspace: workspace, Tenant: workspace, App: i.App,
+		Authz: i.Authz, Attributes: i.Attributes,
+	})
 }
 
 type authzInfo struct {
@@ -60,6 +89,7 @@ type rawAuthzInfo struct {
 // when the key is absent, vs empty when the value is {}.
 type rawIdentityResponse struct {
 	User       json.RawMessage `json:"user"`
+	Workspace  json.RawMessage `json:"workspace"`
 	Tenant     json.RawMessage `json:"tenant"`
 	App        json.RawMessage `json:"app"`
 	Authz      json.RawMessage `json:"authz"`
@@ -208,8 +238,14 @@ func parseCurrentIdentity(raw rawIdentityResponse, context string) (*CurrentIden
 	if raw.User == nil {
 		return nil, fmt.Errorf("%s: response missing 'user'", context)
 	}
-	if raw.Tenant == nil {
-		return nil, fmt.Errorf("%s: response missing 'tenant'", context)
+	workspaceRaw := raw.Workspace
+	workspaceKey := "workspace"
+	if workspaceRaw == nil {
+		workspaceRaw = raw.Tenant
+		workspaceKey = "tenant"
+	}
+	if workspaceRaw == nil {
+		return nil, fmt.Errorf("%s: response missing 'workspace'", context)
 	}
 	if raw.App == nil {
 		return nil, fmt.Errorf("%s: response missing 'app'", context)
@@ -220,9 +256,12 @@ func parseCurrentIdentity(raw rawIdentityResponse, context string) (*CurrentIden
 	if err := json.Unmarshal(raw.User, &result.User); err != nil {
 		return nil, fmt.Errorf("%s: invalid 'user': %w", context, err)
 	}
-	if err := json.Unmarshal(raw.Tenant, &result.Tenant); err != nil {
-		return nil, fmt.Errorf("%s: invalid 'tenant': %w", context, err)
+	var workspace WorkspaceIdentity
+	if err := json.Unmarshal(workspaceRaw, &workspace); err != nil {
+		return nil, fmt.Errorf("%s: invalid '%s': %w", context, workspaceKey, err)
 	}
+	result.Workspace = workspace
+	result.Tenant = workspace
 	if err := json.Unmarshal(raw.App, &result.App); err != nil {
 		return nil, fmt.Errorf("%s: invalid 'app': %w", context, err)
 	}
@@ -253,11 +292,11 @@ func parseCurrentIdentity(raw rawIdentityResponse, context string) (*CurrentIden
 	if result.User.ID == "" {
 		return nil, fmt.Errorf("%s: response missing user.id", context)
 	}
-	if result.Tenant.ID == "" {
-		return nil, fmt.Errorf("%s: response missing tenant.id", context)
+	if result.Workspace.ID == "" {
+		return nil, fmt.Errorf("%s: response missing %s.id", context, workspaceKey)
 	}
-	if result.Tenant.Role == "" {
-		return nil, fmt.Errorf("%s: response missing tenant.role", context)
+	if result.Workspace.Role == "" {
+		return nil, fmt.Errorf("%s: response missing %s.role", context, workspaceKey)
 	}
 	if result.App.ID == "" {
 		return nil, fmt.Errorf("%s: response missing app.id", context)
@@ -356,16 +395,18 @@ func localGetCurrentIdentity() *CurrentIdentity {
 	email := localmode.UserEmail()
 	name := localmode.UserName()
 	role := localmode.TenantRole()
+	workspace := WorkspaceIdentity{
+		ID:   localmode.TenantID(),
+		Role: role,
+	}
 	return &CurrentIdentity{
 		User: UserIdentity{
 			ID:    localmode.UserID(),
 			Email: &email,
 			Name:  &name,
 		},
-		Tenant: TenantIdentity{
-			ID:   localmode.TenantID(),
-			Role: role,
-		},
+		Workspace: workspace,
+		Tenant:    workspace,
 		App: AppIdentity{
 			ID:          localmode.AppID(),
 			Permissions: []string{"manage", "view"},

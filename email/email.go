@@ -126,9 +126,12 @@ type AttachmentContent struct {
 // EmailEventPayload represents a bounce/complaint/delivery event
 // delivered to user apps at POST /api/webhooks/email-events.
 type EmailEventPayload struct {
-	EventID       string  `json:"event_id"`
-	EventType     string  `json:"event_type"` // "bounce", "complaint", "delivered"
-	EmailAddress  string  `json:"email_address"`
+	EventID      string  `json:"event_id"`
+	EventType    string  `json:"event_type"` // "bounce", "complaint", "delivered"
+	EmailAddress string  `json:"email_address"`
+	Provider     *string `json:"provider,omitempty"`
+	SendID       *string `json:"send_id,omitempty"`
+	// Deprecated: Use SendID to correlate an event with a send.
 	ResendEmailID *string `json:"resend_email_id,omitempty"`
 	BounceType    *string `json:"bounce_type,omitempty"`
 	Detail        *string `json:"detail,omitempty"`
@@ -141,15 +144,24 @@ type EmailEventPayload struct {
 
 // Client provides access to the Keelson Email API.
 type Client struct {
-	hc *httpclient.Client
+	hc             *httpclient.Client
+	useGatewayPath bool
 }
 
 // New creates an Email client.
-// If baseURL is empty, KEELSON_EMAIL_API_URL is used.
+// If baseURL is empty, KEELSON_EMAIL_BASE_URL is preferred, then
+// KEELSON_EMAIL_API_URL is used. An explicit baseURL always uses legacy paths.
 // If token is empty, KEELSON_EMAIL_TOKEN is used.
 func New(baseURL, token string) (*Client, error) {
+	useGatewayPath := false
 	if baseURL == "" {
-		baseURL = os.Getenv("KEELSON_EMAIL_API_URL")
+		gatewayBaseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("KEELSON_EMAIL_BASE_URL")), "/")
+		if gatewayBaseURL != "" {
+			baseURL = gatewayBaseURL
+			useGatewayPath = true
+		} else {
+			baseURL = os.Getenv("KEELSON_EMAIL_API_URL")
+		}
 	}
 	if baseURL == "" {
 		return nil, fmt.Errorf("email: base_url is required; pass it or set KEELSON_EMAIL_API_URL")
@@ -161,7 +173,8 @@ func New(baseURL, token string) (*Client, error) {
 		return nil, fmt.Errorf("email: token is required; pass it or set KEELSON_EMAIL_TOKEN")
 	}
 	return &Client{
-		hc: httpclient.New(baseURL, token, nil),
+		hc:             httpclient.New(baseURL, token, nil),
+		useGatewayPath: useGatewayPath,
 	}, nil
 }
 
@@ -194,8 +207,13 @@ func (c *Client) SendCtx(ctx context.Context, req *SendRequest) (*SendResponse, 
 		return nil, fmt.Errorf("email.Send: %w", err)
 	}
 
+	path := "/v1/email/send"
+	if c.useGatewayPath {
+		path = "/__keelson/email/send"
+	}
+
 	var resp SendResponse
-	if err := c.hc.DoJSONCtx(ctx, "POST", "/v1/email/send", body, &resp); err != nil {
+	if err := c.hc.DoJSONCtx(ctx, "POST", path, body, &resp); err != nil {
 		return nil, fmt.Errorf("email.Send: %w", err)
 	}
 	return &resp, nil
@@ -218,6 +236,9 @@ func (c *Client) DownloadAttachmentCtx(ctx context.Context, attachmentID string)
 	}
 
 	path := "/v1/email/attachments/" + url.PathEscape(attachmentID)
+	if c.useGatewayPath {
+		path = "/__keelson/email/attachments/" + url.PathEscape(attachmentID)
+	}
 
 	// Use DoRawCtx because the response is binary, not JSON.
 	resp, err := c.hc.DoRawCtx(ctx, "GET", path, nil, nil)

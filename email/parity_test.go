@@ -147,6 +147,12 @@ func TestParity_EmailEvent(t *testing.T) {
 	if evt.EmailAddress != "bounced@example.com" {
 		t.Errorf("email_address = %q, want %q", evt.EmailAddress, "bounced@example.com")
 	}
+	if evt.Provider == nil || *evt.Provider != "resend" {
+		t.Errorf("provider = %v, want %q", evt.Provider, "resend")
+	}
+	if evt.SendID == nil || *evt.SendID != "550e8400-e29b-41d4-a716-446655440000" {
+		t.Errorf("send_id = %v, want expected UUID", evt.SendID)
+	}
 	if evt.ResendEmailID == nil || *evt.ResendEmailID != "re_001" {
 		t.Errorf("resend_email_id = %v, want %q", evt.ResendEmailID, "re_001")
 	}

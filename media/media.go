@@ -16,8 +16,9 @@
 //   - When KEELSON_MODE is unset (local development), the client uses the
 //     Keelson media service if both Media env values are present, otherwise falls
 //     back to local storage — but refuses that fallback when a platform
-//     environment is detected (any of KEELSON_APP_ID / KEELSON_TENANT_ID /
-//     KEELSON_DEPLOY_ID set), to avoid silent ephemeral writes on Keelson.
+//     environment is detected (any of KEELSON_APP_ID / KEELSON_WORKSPACE_ID /
+//     KEELSON_DEPLOY_ID set; KEELSON_TENANT_ID remains a deprecated alias), to
+//     avoid silent ephemeral writes on Keelson.
 //   - Any other non-empty KEELSON_MODE value is a configuration error.
 package media
 
@@ -59,6 +60,7 @@ func newConfigError(format string, args ...any) error {
 // the app is running on Keelson and must not fall back to local storage.
 var coreIdentifierEnvs = []string{
 	"KEELSON_APP_ID",
+	"KEELSON_WORKSPACE_ID",
 	"KEELSON_TENANT_ID",
 	"KEELSON_DEPLOY_ID",
 }
@@ -198,7 +200,8 @@ func New(baseURL, token string) (*Client, error) {
 		if platformEnvVisible() {
 			return nil, newConfigError(
 				"media: platform environment detected " +
-					"(KEELSON_APP_ID / KEELSON_TENANT_ID / KEELSON_DEPLOY_ID set) but Media is " +
+					"(KEELSON_APP_ID / KEELSON_WORKSPACE_ID (or deprecated " +
+					"KEELSON_TENANT_ID alias) / KEELSON_DEPLOY_ID set) but Media is " +
 					"not configured; refusing to fall back to local storage. " +
 					"Set KEELSON_MODE=local for local development")
 		}

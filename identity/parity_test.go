@@ -70,11 +70,14 @@ func TestParity_CurrentUser(t *testing.T) {
 		t.Errorf("user.name = %v, want %q", id.User.Name, "Taro Yamada")
 	}
 
-	if id.Tenant.ID != "tenant_001" {
-		t.Errorf("tenant.id = %q, want %q", id.Tenant.ID, "tenant_001")
+	if id.Workspace.ID != "workspace_001" {
+		t.Errorf("workspace.id = %q, want %q", id.Workspace.ID, "workspace_001")
 	}
-	if id.Tenant.Role != "admin" {
-		t.Errorf("tenant.role = %q, want %q", id.Tenant.Role, "admin")
+	if id.Workspace.Role != "admin" {
+		t.Errorf("workspace.role = %q, want %q", id.Workspace.Role, "admin")
+	}
+	if id.Workspace != id.Tenant {
+		t.Errorf("workspace = %#v, deprecated tenant alias = %#v; want identical", id.Workspace, id.Tenant)
 	}
 
 	if id.App.ID != "app_xyz" {

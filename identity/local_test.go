@@ -88,6 +88,9 @@ func TestGetCurrentIdentity_LocalMode_Defaults(t *testing.T) {
 	if me.Tenant.Role != "OWNER" {
 		t.Errorf("Tenant.Role = %q, want %q", me.Tenant.Role, "OWNER")
 	}
+	if me.Workspace != me.Tenant {
+		t.Errorf("Workspace = %#v, Tenant alias = %#v", me.Workspace, me.Tenant)
+	}
 	if me.App.ID != "local-app-001" {
 		t.Errorf("App.ID = %q, want %q", me.App.ID, "local-app-001")
 	}

@@ -72,6 +72,7 @@ func newConfigError(format string, args ...any) error {
 
 var coreIdentifierEnvs = []string{
 	"KEELSON_APP_ID",
+	"KEELSON_WORKSPACE_ID",
 	"KEELSON_TENANT_ID",
 	"KEELSON_DEPLOY_ID",
 }
@@ -138,7 +139,8 @@ func New() (*Client, error) {
 		if !hasIdentity() {
 			return nil, newConfigError(
 				"files: KEELSON_MODE=keelson but the platform identity is missing " +
-					"(KEELSON_APP_ID and KEELSON_TENANT_ID must be set); " +
+					"(KEELSON_APP_ID and KEELSON_WORKSPACE_ID must be set; " +
+					"KEELSON_TENANT_ID remains a deprecated alias); " +
 					"the Files capability is unavailable for this deployment")
 		}
 		return newRemoteClient(bucket, prefix), nil
@@ -148,7 +150,8 @@ func New() (*Client, error) {
 		if platformEnvVisible() {
 			return nil, newConfigError(
 				"files: platform environment detected " +
-					"(KEELSON_APP_ID / KEELSON_TENANT_ID / KEELSON_DEPLOY_ID set) but " +
+					"(KEELSON_APP_ID / KEELSON_WORKSPACE_ID (or deprecated " +
+					"KEELSON_TENANT_ID alias) / KEELSON_DEPLOY_ID set) but " +
 					"KEELSON_MODE is unset; refusing to fall back to local storage. " +
 					"Set KEELSON_MODE=local for local development or KEELSON_MODE=keelson " +
 					"for platform storage")
@@ -162,11 +165,18 @@ func New() (*Client, error) {
 	}
 }
 
-// hasIdentity reports whether the tenant + app identity that composes the
+// hasIdentity reports whether the workspace + app identity that composes the
 // prefix is present in the environment.
 func hasIdentity() bool {
 	return strings.TrimSpace(os.Getenv("KEELSON_APP_ID")) != "" &&
-		strings.TrimSpace(os.Getenv("KEELSON_TENANT_ID")) != ""
+		workspaceID() != ""
+}
+
+func workspaceID() string {
+	if id := strings.TrimSpace(os.Getenv("KEELSON_WORKSPACE_ID")); id != "" {
+		return id
+	}
+	return strings.TrimSpace(os.Getenv("KEELSON_TENANT_ID"))
 }
 
 func newLocalClient() *Client {
