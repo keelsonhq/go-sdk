@@ -2,9 +2,9 @@ package files
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"testing"
+
+	"github.com/keelsonhq/go-sdk/internal/testfixtures"
 )
 
 type workspaceIdentityFixture struct {
@@ -17,7 +17,7 @@ type workspaceIdentityFixture struct {
 }
 
 func TestWorkspaceIdentityParity(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "workspace_identity_parity.json"))
+	data, err := testfixtures.ReadFile("workspace_identity_parity.json")
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
 	}
