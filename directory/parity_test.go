@@ -44,8 +44,8 @@ func TestParity_Members(t *testing.T) {
 	if result.NextOffset != nil {
 		t.Errorf("next_offset = %v, want nil", result.NextOffset)
 	}
-	if len(result.Items) != 2 {
-		t.Fatalf("items length = %d, want 2", len(result.Items))
+	if len(result.Items) != 3 {
+		t.Fatalf("items length = %d, want 3", len(result.Items))
 	}
 
 	alice := result.Items[0]
@@ -61,6 +61,9 @@ func TestParity_Members(t *testing.T) {
 	if alice.Role != "admin" {
 		t.Errorf("items[0].role = %q, want %q", alice.Role, "admin")
 	}
+	if alice.ImageURL == nil || *alice.ImageURL != "https://img.clerk.com/parity-alice" {
+		t.Errorf("items[0].image_url = %v, want %q", alice.ImageURL, "https://img.clerk.com/parity-alice")
+	}
 
 	bob := result.Items[1]
 	if bob.ID != "usr_m02" {
@@ -68,6 +71,18 @@ func TestParity_Members(t *testing.T) {
 	}
 	if bob.Role != "" {
 		t.Errorf("items[1].role = %q, want empty string", bob.Role)
+	}
+	if bob.ImageURL != nil {
+		t.Errorf("items[1].image_url = %q, want nil", *bob.ImageURL)
+	}
+
+	// Key absent (older gateway) parses to nil, same as an explicit null.
+	carol := result.Items[2]
+	if carol.ID != "usr_m03" {
+		t.Errorf("items[2].id = %q, want %q", carol.ID, "usr_m03")
+	}
+	if carol.ImageURL != nil {
+		t.Errorf("items[2].image_url = %q, want nil", *carol.ImageURL)
 	}
 }
 

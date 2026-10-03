@@ -1,6 +1,6 @@
 # Keelson Go SDK
 
-Go SDK for building apps on the Keelson platform. Provides four packages:
+Go SDK for building apps on the [Keelson](https://keelson.dev) platform ([SDK guide](https://keelson.dev/docs/building-apps/sdk/)). Provides five packages:
 
 > **Note**: This repository is a read-only release mirror. Development happens in the private Keelson monorepo; issues are welcome here, but pull requests are not accepted — changes land through the next release.
 
@@ -10,6 +10,7 @@ Go SDK for building apps on the Keelson platform. Provides four packages:
 | `directory` | `github.com/keelsonhq/go-sdk/directory` | Workspace member and group directory |
 | `media` | `github.com/keelsonhq/go-sdk/media` | Media storage (upload, serve by ID) |
 | `files` | `github.com/keelsonhq/go-sdk/files` | Data files (key-addressed, overwrite, private) |
+| `tasks` | `github.com/keelsonhq/go-sdk/tasks` | Background tasks (enqueue, get) |
 
 Cross-language parity across Node, Python, and Go is defined by the
 [cross-SDK parity contract shipped in this repo](./PARITY.md). APIs below are
@@ -216,6 +217,15 @@ UUID.
 | `ListGroups(opts...) ([]GroupItem, error)` | List workspace groups |
 | `WithAppToken(token) RequestOption` | App-as-actor Directory access via `Authorization: Bearer <token>` |
 
+`MemberItem` carries `ID`, `Email`, `Name`, `Role`, and `ImageURL`
+(JSON `image_url`). `ImageURL` is a `*string`: the member's profile image URL
+served by Clerk (`img.clerk.com`), or `nil` when the member has not uploaded an
+image (render initials instead). Append `width` / `height` query parameters to
+get a resized image. Store only the member `ID` in your app's DB and re-fetch
+`ImageURL` on display rather than relying on the URL to change when the member
+replaces their image.
+Local mode returns `nil` for every member.
+
 ### Go-specific helpers
 
 | Method | Description |
@@ -376,6 +386,130 @@ missing config returns an error wrapping `files.ErrConfig`. See the
 
 ---
 
+## Tasks
+
+Enqueue a run of a command declared under `tasks:` in `keelson.yaml`, and
+read its state. On Keelson the platform runs the command once on a separate
+instance, passes the payload as one JSON line on stdin, and retries failed
+attempts (at-least-once: make the command safe to run twice). The SDK does not
+receive tasks; the command is an ordinary program that reads stdin.
+
+```yaml
+# keelson.yaml
+tasks:
+  - name: generate-pdf
+    command: python make_pdf.py
+    timeout: 300      # seconds; optional
+```
+
+```go
+import "github.com/keelsonhq/go-sdk/tasks"
+
+client, err := tasks.New() // errors.Is(err, tasks.ErrConfig) on misconfiguration
+if err != nil {
+	return err
+}
+taskID, err := client.Enqueue(ctx, "generate-pdf", map[string]int{"order_id": 1},
+	tasks.WithIdempotencyKey("order-1-pdf"))
+if err != nil {
+	var te *tasks.Error
+	if errors.As(err, &te) && te.Code == "TASK_NOT_DECLARED" {
+		// ...
+	}
+	return err
+}
+status, err := client.Get(ctx, taskID)
+```
+
+### Cross-language guaranteed API
+
+| Function | Description |
+|----------|-------------|
+| `tasks.New()` | Construct a client; resolves the mode once. Errors wrap `tasks.ErrConfig` on misconfiguration |
+| `(*Client).Enqueue(ctx, name, payload, ...EnqueueOption)` | Enqueue one run; returns the `task_id`. `payload` is any value `json.Marshal` accepts (`nil` is JSON `null`; pass a `json.RawMessage` for pre-encoded JSON) |
+| `tasks.WithIdempotencyKey(key)` | Idempotency key option (1–128 printable ASCII characters) |
+| `(*Client).Get(ctx, taskID)` | `*TaskStatus`: `TaskID`, `Name`, `Status` (`queued` / `running` / `succeeded` / `failed` / `cancelled`), `ClaimedAttempts`, `LastFailureCode` (`*string`), `CreatedAt` (`time.Time`), `FinishedAt` (`*time.Time`) |
+| `*tasks.Error` | The single error type (`Code`, `Status`, `Message`) |
+
+A repeat with the same idempotency key returns the existing `task_id` instead
+of enqueueing again. In local mode, cancelling `ctx` sends `SIGTERM` to the CLI
+(which forwards it to the command), force-kills it after 130 s, and `Enqueue`
+returns `ctx.Err()` itself, so `errors.Is(err, context.Canceled)` works.
+
+### Errors
+
+Every failure is one `*tasks.Error` with `code`, `status` (the HTTP status, or
+`0` when there was no HTTP response), and `message`. Branch on `code`:
+
+| `code` | Meaning |
+|--------|---------|
+| `TASK_NOT_DECLARED` | The name is not under `tasks:` in the deployed (or local) `keelson.yaml` |
+| `TASK_INVALID_REQUEST` | Empty name, malformed idempotency key, or a payload that is not JSON-serializable |
+| `TASK_PAYLOAD_TOO_LARGE` | The request body is over 65,536 bytes (checked before sending) |
+| `TASK_NOT_FOUND` | `get` of an unknown task ID (local mode: not enqueued in this process) |
+| `TASK_BACKLOG_LIMIT_EXCEEDED` / `TASK_MONTHLY_QUOTA_EXCEEDED` | Plan limits; not retried by the SDK |
+| `TASKS_UNAVAILABLE` | Intake is closed on the platform. Retrying does not help |
+| `TASKS_UNAVAILABLE_TRANSIENT` | A passing outage (502/503/504, connection failure, 15 s timeout), after the SDK's own retries |
+| `TASKS_FORBIDDEN` | 403 from Cloud Run. Right after the first deploy that declares `tasks:`, the permission can take a few minutes to propagate |
+| `TASKS_UNAUTHORIZED` / `TASKS_IDENTITY_TOKEN_ERROR` | The id token was rejected / could not be fetched from the metadata server |
+| `TASKS_SERVER_ERROR` / `TASKS_HTTP_ERROR` / `TASKS_UNEXPECTED_RESPONSE` | Other unexpected responses |
+| `TASKS_NOT_CONFIGURED` | Mode resolution failed (below) — wraps `tasks.ErrConfig` |
+| `TASKS_LOCAL_CLI_NOT_FOUND` / `TASKS_LOCAL_CLI_FAILED` | Local mode: no `keelson` on `PATH` (install: `https://keelson.dev/install.sh`) / the CLI failed (try `keelson upgrade`) |
+
+Retries: only `TASKS_UNAVAILABLE_TRANSIENT` is retried (3 attempts in total,
+waiting 0.5 s then 1 s). `get` always retries; enqueue retries **only with an
+idempotency key**, because without one a request the server already accepted
+would be enqueued twice. The payload never appears in an error message.
+
+### Modes (fail-closed runtime-mode contract)
+
+| Condition | Result |
+|-----------|--------|
+| `KEELSON_MODE=keelson` + `KEELSON_TASKS_BASE_URL` set | Keelson (runtime API); `KEELSON_APP_ID` is also required |
+| `KEELSON_MODE=keelson` + `KEELSON_TASKS_BASE_URL` missing | `TASKS_NOT_CONFIGURED` (declare `tasks:` in `keelson.yaml` and deploy) |
+| `KEELSON_MODE=local` | Local (runs the command through the CLI) |
+| `KEELSON_MODE` unset + a platform variable (`KEELSON_APP_ID` / `KEELSON_WORKSPACE_ID` / `KEELSON_DEPLOY_ID`) | `TASKS_NOT_CONFIGURED` (never falls back to local on Keelson) |
+| `KEELSON_MODE` unset + none of those | Local (zero-config development) |
+| Any other `KEELSON_MODE` value | `TASKS_NOT_CONFIGURED` |
+
+### Environment variables
+
+| Variable | Description |
+|----------|-------------|
+| `KEELSON_MODE` | `keelson` (remote) or `local`; the single mode signal |
+| `KEELSON_TASKS_BASE_URL` | Platform-injected runtime API URL when the app declares `tasks:`; also the id-token audience |
+| `KEELSON_APP_ID` | Platform-injected app ID; the `/internal/apps/{app_id}/...` path segment |
+
+There is no token variable: the id token comes from the Cloud Run metadata
+server on every call.
+
+### Local mode
+
+In local mode, enqueue runs `keelson dev task run <name> --payload - --json`
+(the `keelson` CLI on `PATH`) from the app's working directory, so start your
+dev server in the directory that has `keelson.yaml`. The command receives the
+same stdin document as on Keelson, its output goes to your app's stderr, and
+enqueue returns **after the command has finished** — a request handler that
+enqueues waits for it. A command that exits non-zero or times out is not an
+enqueue error: `get` reports `status` `failed` with `last_failure_code`
+`exit_nonzero` or `timed_out`.
+
+Differences from Keelson:
+
+- synchronous: the command runs before enqueue returns, in the same machine
+- no retry: one attempt only
+- no concurrency, backlog, or monthly-quota limits
+- the declared `timeout` applies as written (on Keelson it is capped by your
+  plan's limit)
+- `get` knows only tasks enqueued in the same process; others are
+  `TASK_NOT_FOUND`, and a running task is never visible
+- the same name + idempotency key returns the existing task ID without running
+  again, but two concurrent calls with the same key both run the command
+
+See the [cross-SDK parity contract shipped in this repo](./PARITY.md) for the full contract.
+
+---
+
 ## Development
 
 ```bash
@@ -386,6 +520,7 @@ go test ./...
 go test ./media/
 go test ./identity/
 go test ./directory/
+go test ./tasks/
 
 # Build check (verify compilation)
 go build ./...

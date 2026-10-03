@@ -6,4 +6,5 @@
 //   - media     — Media storage API (upload, get, delete, exists, stat, etc.)
 //   - files     — Private key-addressed data files
 //   - email     — Email API (send, verify inbound webhooks, etc.)
+//   - tasks     — Background tasks (enqueue, get; local runs via the CLI)
 package keelson

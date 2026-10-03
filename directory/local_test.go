@@ -47,6 +47,11 @@ func TestListMembers_LocalMode_Default(t *testing.T) {
 	if result.NextOffset != nil {
 		t.Errorf("NextOffset = %v, want nil", result.NextOffset)
 	}
+	for _, m := range result.Items {
+		if m.ImageURL != nil {
+			t.Errorf("%s ImageURL = %q, want nil", m.ID, *m.ImageURL)
+		}
+	}
 }
 
 func TestListMembers_LocalMode_FilterByQ(t *testing.T) {
@@ -267,6 +272,9 @@ func TestGetUser_LocalMode_Found(t *testing.T) {
 	}
 	if user2.Name != "Alice (local)" {
 		t.Errorf("Name = %q, want %q", user2.Name, "Alice (local)")
+	}
+	if user2.ImageURL != nil {
+		t.Errorf("ImageURL = %q, want nil", *user2.ImageURL)
 	}
 }
 

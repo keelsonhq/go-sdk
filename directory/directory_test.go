@@ -156,6 +156,47 @@ func TestGetUser(t *testing.T) {
 			},
 		},
 		{
+			name:   "image_url string",
+			userID: "u-1",
+			status: 200,
+			response: map[string]any{
+				"id": "u-1", "email": "a@b.com", "name": "Alice", "role": "OWNER",
+				"image_url": "https://img.clerk.com/u-1",
+			},
+			check: func(t *testing.T, m *directory.MemberItem) {
+				if m.ImageURL == nil || *m.ImageURL != "https://img.clerk.com/u-1" {
+					t.Errorf("ImageURL = %v, want %q", m.ImageURL, "https://img.clerk.com/u-1")
+				}
+			},
+		},
+		{
+			name:   "image_url null",
+			userID: "u-1",
+			status: 200,
+			response: map[string]any{
+				"id": "u-1", "email": "a@b.com", "name": "Alice", "role": "OWNER",
+				"image_url": nil,
+			},
+			check: func(t *testing.T, m *directory.MemberItem) {
+				if m.ImageURL != nil {
+					t.Errorf("ImageURL = %q, want nil", *m.ImageURL)
+				}
+			},
+		},
+		{
+			name:   "image_url absent",
+			userID: "u-1",
+			status: 200,
+			response: map[string]any{
+				"id": "u-1", "email": "a@b.com", "name": "Alice", "role": "OWNER",
+			},
+			check: func(t *testing.T, m *directory.MemberItem) {
+				if m.ImageURL != nil {
+					t.Errorf("ImageURL = %q, want nil", *m.ImageURL)
+				}
+			},
+		},
+		{
 			name:       "404 not found",
 			userID:     "nonexistent",
 			status:     404,

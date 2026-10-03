@@ -20,6 +20,10 @@ type MemberItem struct {
 	Email string `json:"email"`
 	Name  string `json:"name"`
 	Role  string `json:"role"`
+	// ImageURL is the Clerk-hosted profile image URL, or nil when the member
+	// has no uploaded image. Resize with width / height query parameters.
+	// Do not store it in your app's DB; re-fetch on display.
+	ImageURL *string `json:"image_url"`
 }
 
 // PaginatedMembers is the response from GET /__keelson/members.
@@ -311,6 +315,9 @@ type rawMemberItem struct {
 	Email *string `json:"email"`
 	Name  *string `json:"name"`
 	Role  *string `json:"role"`
+	// ImageURL stays nil for both null and an absent key (older gateways
+	// omit it), so it is optional unlike role.
+	ImageURL *string `json:"image_url"`
 }
 
 func parseMemberItem(data json.RawMessage) (*MemberItem, error) {
@@ -333,10 +340,11 @@ func parseMemberItem(data json.RawMessage) (*MemberItem, error) {
 		return nil, fmt.Errorf("missing 'role'")
 	}
 	return &MemberItem{
-		ID:    *raw.ID,
-		Email: *raw.Email,
-		Name:  *raw.Name,
-		Role:  *raw.Role,
+		ID:       *raw.ID,
+		Email:    *raw.Email,
+		Name:     *raw.Name,
+		Role:     *raw.Role,
+		ImageURL: raw.ImageURL,
 	}, nil
 }
 
