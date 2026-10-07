@@ -54,7 +54,7 @@ import (
 const MaxBodyBytes = 65536
 
 const (
-	sdkUserAgent = "Keelson-Go-SDK/0.2.0"
+	sdkUserAgent = "Keelson-Go-SDK/0.2.1"
 
 	idempotencyKeyMaxChars = 128
 

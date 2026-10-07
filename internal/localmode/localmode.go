@@ -152,14 +152,3 @@ var FixtureGroups = []FixtureGroup{
 	{ID: "local-group-admins", Key: "admins", DisplayName: "Admins", Kind: "SYSTEM", SystemKind: strPtr("admins")},
 	{ID: "local-group-owners", Key: "owners", DisplayName: "Owners", Kind: "SYSTEM", SystemKind: strPtr("owners")},
 }
-
-// GroupKeyByID resolves a fixture group ID to its key. Returns ("", false)
-// when no fixture group has that ID.
-func GroupKeyByID(id string) (string, bool) {
-	for _, g := range FixtureGroups {
-		if g.ID == id {
-			return g.Key, true
-		}
-	}
-	return "", false
-}

@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/keelsonhq/go-sdk/internal/httpclient"
 	"github.com/keelsonhq/go-sdk/internal/localmode"
@@ -18,6 +20,15 @@ type UserIdentity struct {
 	ID    string  `json:"id"`
 	Email *string `json:"email"`
 	Name  *string `json:"name"`
+}
+
+// RequestUser is the current user of a request plus their permissions on
+// this app (from X-Keelson-User-App-Perms).
+type RequestUser struct {
+	ID    string   `json:"id"`
+	Email *string  `json:"email"`
+	Name  *string  `json:"name"`
+	Perms []string `json:"perms"`
 }
 
 // WorkspaceIdentity holds the workspace context of the current request.
@@ -151,6 +162,9 @@ type Client struct {
 	baseURL string
 	hc      *httpclient.Client
 	local   bool
+	// roster is the local users file, nil when local mode uses the built-in
+	// fixture data.
+	roster []localmode.RosterUser
 }
 
 // New creates an Identity client.
@@ -166,10 +180,18 @@ type Client struct {
 // error if the base URL is still missing.
 //
 // When KEELSON_LOCAL_MODE is enabled the client returns fixture data
-// without making HTTP calls, matching the Node and Python SDKs.
+// without making HTTP calls, matching the Node and Python SDKs. The fixture
+// user comes from the local users file (KEELSON_LOCAL_USERS_FILE, or
+// ./.keelson/dev-users.json when it exists) when there is one. New returns an
+// error in local mode when a Keelson deployment is detected or the users file
+// cannot be read.
 func New(baseURL string) (*Client, error) {
 	if localmode.Enabled() {
-		return &Client{local: true}, nil
+		roster, err := localmode.Setup()
+		if err != nil {
+			return nil, fmt.Errorf("identity.New: %w", err)
+		}
+		return &Client{local: true, roster: roster}, nil
 	}
 	if baseURL == "" {
 		baseURL = os.Getenv("KEELSON_DIRECTORY_BASE_URL")
@@ -197,6 +219,9 @@ func (c *Client) IsLocal() bool {
 // In local mode, returns fixture data controlled by KEELSON_LOCAL_* env vars.
 func (c *Client) GetCurrentUser(opts ...RequestOption) (*UserIdentity, error) {
 	if c.local {
+		if c.roster != nil {
+			return rosterUserIdentity(localmode.FixedUser(c.roster)), nil
+		}
 		return localGetCurrentUser(), nil
 	}
 
@@ -204,10 +229,43 @@ func (c *Client) GetCurrentUser(opts ...RequestOption) (*UserIdentity, error) {
 	return parseCurrentUserHeaders(cfg.headers)
 }
 
+// GetRequestUser reads trusted X-Keelson-User-* headers and returns the
+// current user plus their app permissions (X-Keelson-User-App-Perms, empty
+// when absent). Values sent as raw UTF-8 but read as latin-1 are restored.
+// In local mode, returns the fixed local user without reading headers.
+func (c *Client) GetRequestUser(opts ...RequestOption) (*RequestUser, error) {
+	if c.local {
+		if c.roster != nil {
+			u := localmode.FixedUser(c.roster)
+			basic := rosterUserIdentity(u)
+			return &RequestUser{ID: basic.ID, Email: basic.Email, Name: basic.Name, Perms: append([]string(nil), u.Perms...)}, nil
+		}
+		basic := localGetCurrentUser()
+		return &RequestUser{ID: basic.ID, Email: basic.Email, Name: basic.Name, Perms: []string{"view", "manage"}}, nil
+	}
+
+	headers := buildConfig(opts).headers
+	read := func(name string) string { return readHeaderWith(headers, name, restoreUTF8) }
+	basic, err := userFromHeaders(read)
+	if err != nil {
+		return nil, err
+	}
+	perms := []string{}
+	for _, p := range strings.Split(read("x-keelson-user-app-perms"), ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			perms = append(perms, p)
+		}
+	}
+	return &RequestUser{ID: basic.ID, Email: basic.Email, Name: basic.Name, Perms: perms}, nil
+}
+
 // GetCurrentIdentity calls GET /__keelson/users/{id}/identity as the app
 // actor and returns the full current identity.
 func (c *Client) GetCurrentIdentity(opts ...RequestOption) (*CurrentIdentity, error) {
 	if c.local {
+		if c.roster != nil {
+			return rosterCurrentIdentity(localmode.FixedUser(c.roster)), nil
+		}
 		return localGetCurrentIdentity(), nil
 	}
 	if c.hc == nil {
@@ -314,37 +372,69 @@ func parseCurrentIdentity(raw rawIdentityResponse, context string) (*CurrentIden
 }
 
 func parseCurrentUserHeaders(headers http.Header) (*UserIdentity, error) {
-	id := readHeader(headers, "x-keelson-user-id")
+	return userFromHeaders(func(name string) string { return readHeader(headers, name) })
+}
+
+func userFromHeaders(read func(name string) string) (*UserIdentity, error) {
+	id := read("x-keelson-user-id")
 	if id == "" {
 		return nil, fmt.Errorf("current user headers missing 'x-keelson-user-id'")
 	}
 	user := &UserIdentity{ID: id}
-	if email := readHeader(headers, "x-keelson-user-email"); email != "" {
+	if email := read("x-keelson-user-email"); email != "" {
 		user.Email = &email
 	}
-	if name := readHeader(headers, "x-keelson-user-name"); name != "" {
+	if name := read("x-keelson-user-name"); name != "" {
 		user.Name = &name
 	}
 	return user, nil
 }
 
 func readHeader(headers http.Header, name string) string {
+	return readHeaderWith(headers, name, func(s string) string { return s })
+}
+
+// readHeaderWith returns the first non-blank value of the header, decoded
+// before trimming.
+func readHeaderWith(headers http.Header, name string, decode func(string) string) string {
 	if headers == nil {
 		return ""
 	}
-	if value := strings.TrimSpace(headers.Get(name)); value != "" {
+	if value := strings.TrimSpace(decode(headers.Get(name))); value != "" {
 		return value
 	}
 	for key, values := range headers {
 		if strings.EqualFold(key, name) {
 			for _, value := range values {
-				if text := strings.TrimSpace(value); text != "" {
+				if text := strings.TrimSpace(decode(value)); text != "" {
 					return text
 				}
 			}
 		}
 	}
 	return ""
+}
+
+// restoreUTF8 undoes a latin-1 reading of raw UTF-8 header bytes: when every
+// character is U+00FF or below, at least one is U+0080 or above, and the
+// latin-1 bytes are valid UTF-8, the UTF-8 decoding is returned. Otherwise
+// the value is kept.
+func restoreUTF8(value string) string {
+	raw := make([]byte, 0, len(value))
+	high := false
+	for _, r := range value {
+		if r > 0xFF {
+			return value
+		}
+		if r >= 0x80 {
+			high = true
+		}
+		raw = append(raw, byte(r))
+	}
+	if !high || !utf8.Valid(raw) {
+		return value
+	}
+	return string(raw)
 }
 
 func buildConfig(opts []RequestOption) *requestConfig {
@@ -416,5 +506,38 @@ func localGetCurrentIdentity() *CurrentIdentity {
 		Attributes: &Attributes{
 			Groups: localmode.GroupsForRole(role),
 		},
+	}
+}
+
+// rosterUserIdentity is the basic profile of a users-file entry; a blank
+// email or name is nil, as when read from headers.
+func rosterUserIdentity(u localmode.RosterUser) *UserIdentity {
+	user := &UserIdentity{ID: u.ID}
+	if email := strings.TrimSpace(u.Email); email != "" {
+		user.Email = &email
+	}
+	if name := strings.TrimSpace(u.Name); name != "" {
+		user.Name = &name
+	}
+	return user
+}
+
+// rosterCurrentIdentity builds the full identity of a users-file entry.
+func rosterCurrentIdentity(u localmode.RosterUser) *CurrentIdentity {
+	email, name := u.Email, u.Name
+	workspace := WorkspaceIdentity{ID: localmode.TenantID(), Role: u.Role()}
+	perms := append([]string(nil), u.Perms...)
+	sort.Strings(perms)
+	return &CurrentIdentity{
+		User:      UserIdentity{ID: u.ID, Email: &email, Name: &name},
+		Workspace: workspace,
+		Tenant:    workspace,
+		App: AppIdentity{
+			ID:          localmode.AppID(),
+			Permissions: perms,
+			Roles:       []string{},
+		},
+		Authz:      &authzInfo{Version: 1},
+		Attributes: &Attributes{Groups: u.Groups()},
 	}
 }

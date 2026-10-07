@@ -1,6 +1,8 @@
 # Keelson Go SDK
 
-Go SDK for building apps on the [Keelson](https://keelson.dev) platform ([SDK guide](https://keelson.dev/docs/building-apps/sdk/)). Provides five packages:
+SDK guide: https://keelson.dev/docs/building-apps/sdk/
+
+Go SDK for building apps on the Keelson platform. Provides five packages:
 
 > **Note**: This repository is a read-only release mirror. Development happens in the private Keelson monorepo; issues are welcome here, but pull requests are not accepted — changes land through the next release.
 
@@ -31,9 +33,10 @@ Import only the packages you need.
 
 Get the authenticated user's identity. In production, the Keelson auth gateway
 injects trusted `X-Keelson-User-*` headers before requests reach the app.
-Use `GetCurrentUser` when the basic user profile is enough; use
-`GetCurrentIdentity` when the app needs workspace role, app permissions, app
-roles, or group attributes.
+Use `GetCurrentUser` when the basic user profile is enough, `GetRequestUser`
+when the app also needs the user's permissions on this app (`view` /
+`manage`), and `GetCurrentIdentity` when the app needs workspace role, app
+permissions, app roles, or group attributes.
 
 ```go
 import (
@@ -49,6 +52,10 @@ if err != nil { /* ... */ }
 user, err := client.GetCurrentUser(identity.WithHeaders(r.Header))
 if err != nil { /* ... */ }
 fmt.Println(user.ID)
+
+requestUser, err := client.GetRequestUser(identity.WithHeaders(r.Header))
+if err != nil { /* ... */ }
+fmt.Println(requestUser.Perms) // ["view", "manage"]
 
 current, err := client.GetCurrentIdentity(
     identity.WithHeaders(r.Header),
@@ -66,6 +73,7 @@ fmt.Println(current.App.Permissions) // ["manage", "view"]
 |--------|-------------|
 | `New(baseURL) (*Client, error)` | Create client (falls back to `KEELSON_DIRECTORY_BASE_URL`, then the deprecated `KEELSON_IDENTITY_BASE_URL`) |
 | `GetCurrentUser(opts...) (*UserIdentity, error)` | Parse the current user's basic profile from trusted `X-Keelson-User-*` headers; no network call |
+| `GetRequestUser(opts...) (*RequestUser, error)` | `GetCurrentUser` plus `Perms` from `X-Keelson-User-App-Perms`; no network call |
 | `GetCurrentIdentity(opts...) (*CurrentIdentity, error)` | Fetch the current user's full identity as the app actor |
 | `WithHeaders(headers) RequestOption` | Supply incoming request headers for current-user lookup |
 | `WithAppToken(token) RequestOption` | App-as-actor current identity lookup via `Authorization: Bearer <token>` |
@@ -89,6 +97,14 @@ fmt.Println(current.App.Permissions) // ["manage", "view"]
 `GetCurrentIdentity` is app-token only. It reads the subject user id from
 trusted headers and rejects explicit `WithCookie`.
 
+`RequestUser` has `ID`, `Email *string`, `Name *string`, and `Perms []string`.
+`Perms` is `X-Keelson-User-App-Perms` split on `,` with blanks dropped, in
+header order (empty when the header is absent, as on machine and webhook
+calls). A missing `X-Keelson-User-Id` is the same error as `GetCurrentUser`.
+`GetRequestUser` also restores non-ASCII values (such as a Japanese name) that
+a framework handed over as raw UTF-8 bytes read as latin-1;
+`GetCurrentUser` does not.
+
 ### Migration note
 
 `GetCurrentUser` no longer forwards browser cookies to `/__keelson/user` and no
@@ -103,8 +119,48 @@ when you need `Workspace.Role`, `App.Permissions`, `App.Roles`, or
 
 | Mode | Condition | Behaviour |
 |------|-----------|-----------|
-| Local | `KEELSON_LOCAL_MODE` set | Returns deterministic fixture data (no HTTP calls) |
+| Local | `KEELSON_LOCAL_MODE` set | Returns deterministic fixture data (no HTTP calls, headers ignored) |
 | Keelson | Default | Calls the Keelson auth gateway via `KEELSON_DIRECTORY_BASE_URL` (canonical, platform-injected). `KEELSON_IDENTITY_BASE_URL` is a **deprecated** fallback only |
+
+### Local mode
+
+Local mode is for local development only. `identity.New` and `directory.New`
+return an error when `KEELSON_LOCAL_MODE` is set in a Keelson deployment
+(`KEELSON_MODE=keelson`, or a non-blank `KEELSON_APP_ID`,
+`KEELSON_WORKSPACE_ID`, `KEELSON_TENANT_ID`, `KEELSON_DEPLOY_ID`, or
+`KEELSON_APP_URL`); they never fall back to the production path.
+
+The local users come from a users file: `KEELSON_LOCAL_USERS_FILE`, or
+`./.keelson/dev-users.json` when that exists (relative paths resolve from the
+process working directory). `New` returns an error when the file is missing
+(when named explicitly), unreadable, or malformed. Restart the app after
+editing it.
+
+```json
+{
+  "users": [
+    { "id": "sample-tanaka", "email": "tanaka@example.com", "name": "Tanaka Taro", "perms": ["view", "manage"] },
+    { "id": "sample-sato", "email": "sato@example.com", "name": "Sato Hanako", "perms": ["view"], "image_url": null }
+  ]
+}
+```
+
+- `users` has at least one entry; `id` is non-empty and unique; `email` and
+  `name` are strings (may be empty); `perms` is `["view"]` or
+  `["view", "manage"]` in any order; `image_url` is optional. Unknown keys are
+  ignored.
+- The current user (`GetCurrentUser` / `GetRequestUser` /
+  `GetCurrentIdentity`) is the first user with `manage`, or the first user.
+- A user with `manage` has role `ADMIN` and groups `admins` and `everyone`;
+  otherwise `APP_USER` and `everyone`. `ListGroups` returns `admins` and
+  `everyone`. `ListMembers` keeps the file order.
+- With a users file, `KEELSON_LOCAL_USER_*` and `KEELSON_LOCAL_WORKSPACE_ROLE`
+  are ignored; `KEELSON_LOCAL_WORKSPACE_ID` and `KEELSON_LOCAL_APP_ID` still
+  apply.
+
+Without a users file, local mode returns the built-in fixture data:
+the `KEELSON_LOCAL_USER_*` user, plus Alice, Bob, and Carol as members, and
+`GetRequestUser` reports `Perms` `["view", "manage"]`.
 
 ### Environment variables
 
@@ -113,7 +169,8 @@ when you need `Workspace.Role`, `App.Permissions`, `App.Roles`, or
 | `KEELSON_DIRECTORY_BASE_URL` | **Canonical, platform-injected** base URL for `GetCurrentIdentity` and Directory calls. Use this |
 | `KEELSON_DIRECTORY_TOKEN` | App token for app-as-actor current identity and Directory access |
 | `KEELSON_IDENTITY_BASE_URL` | **Deprecated** compatibility fallback for the base URL, used only when `KEELSON_DIRECTORY_BASE_URL` and an explicit `baseURL` are both absent |
-| `KEELSON_LOCAL_MODE` | Set to `1`, `true`, or `yes` to use fixture data |
+| `KEELSON_LOCAL_MODE` | Set to `1`, `true`, or `yes` to use fixture data (local development only; refused in a Keelson deployment) |
+| `KEELSON_LOCAL_USERS_FILE` | Local mode users file (default: `./.keelson/dev-users.json` when it exists) |
 | `KEELSON_LOCAL_USER_ID` | Override local user ID (default: `local-user-001`) |
 | `KEELSON_LOCAL_USER_EMAIL` | Override local user email (default: `dev@localhost`) |
 | `KEELSON_LOCAL_USER_NAME` | Override local user name (default: `Local Developer`) |
@@ -134,7 +191,8 @@ major SDK version.
 ## Directory
 
 Lookup workspace members and groups. Same forwarding pattern as Identity.
-Supports `KEELSON_LOCAL_MODE` with the same fixture data and env overrides.
+Supports `KEELSON_LOCAL_MODE` with the same fixture data, users file, and env
+overrides (see Identity's "Local mode").
 
 ```go
 import "github.com/keelsonhq/go-sdk/directory"
@@ -224,7 +282,8 @@ image (render initials instead). Append `width` / `height` query parameters to
 get a resized image. Store only the member `ID` in your app's DB and re-fetch
 `ImageURL` on display rather than relying on the URL to change when the member
 replaces their image.
-Local mode returns `nil` for every member.
+Local mode returns `nil` for every member, except the `image_url` of a users
+file entry.
 
 ### Go-specific helpers
 
@@ -239,7 +298,8 @@ Local mode returns `nil` for every member.
 | `KEELSON_DIRECTORY_BASE_URL` | **Canonical, platform-injected** base URL for Directory calls. Use this |
 | `KEELSON_DIRECTORY_TOKEN` | App token for app-as-actor Directory access; used when no `WithAppToken` / `WithAuthorization` / `WithCookie` is given |
 | `KEELSON_IDENTITY_BASE_URL` | **Deprecated** compatibility fallback for the base URL; new code should use `KEELSON_DIRECTORY_BASE_URL` |
-| `KEELSON_LOCAL_MODE` | Set to `1`, `true`, or `yes` to use fixture data |
+| `KEELSON_LOCAL_MODE` | Set to `1`, `true`, or `yes` to use fixture data (local development only; refused in a Keelson deployment) |
+| `KEELSON_LOCAL_USERS_FILE` | Same users file as Identity |
 | `KEELSON_LOCAL_USER_*` / `KEELSON_LOCAL_WORKSPACE_*` / `KEELSON_LOCAL_APP_*` | Same overrides as Identity |
 
 ---

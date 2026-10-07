@@ -121,6 +121,9 @@ type Client struct {
 	baseURL string
 	hc      *httpclient.Client
 	local   bool
+	// roster is the local users file, nil when local mode uses the built-in
+	// fixture data.
+	roster []localmode.RosterUser
 }
 
 // New creates a Directory client.
@@ -130,10 +133,18 @@ type Client struct {
 // configurations working.
 //
 // When KEELSON_LOCAL_MODE is enabled the client returns fixture data
-// without making HTTP calls, matching the Node and Python SDKs.
+// without making HTTP calls, matching the Node and Python SDKs. Members come
+// from the local users file (KEELSON_LOCAL_USERS_FILE, or
+// ./.keelson/dev-users.json when it exists) when there is one. New returns an
+// error in local mode when a Keelson deployment is detected or the users file
+// cannot be read.
 func New(baseURL string) (*Client, error) {
 	if localmode.Enabled() {
-		return &Client{local: true}, nil
+		roster, err := localmode.Setup()
+		if err != nil {
+			return nil, fmt.Errorf("directory.New: %w", err)
+		}
+		return &Client{local: true, roster: roster}, nil
 	}
 	if baseURL == "" {
 		baseURL = os.Getenv("KEELSON_DIRECTORY_BASE_URL")
@@ -172,7 +183,7 @@ func (c *Client) ListMembers(params *ListMembersParams, opts ...RequestOption) (
 		return nil, fmt.Errorf("directory.ListMembers: specify only one of GroupID or GroupKey")
 	}
 	if c.local {
-		return localListMembers(params), nil
+		return c.localData().listMembers(params), nil
 	}
 
 	cfg := buildConfig(opts)
@@ -250,7 +261,7 @@ func (c *Client) GetUser(userID string, opts ...RequestOption) (*MemberItem, err
 	}
 
 	if c.local {
-		return localGetUser(userID)
+		return c.localData().getUser(userID)
 	}
 
 	cfg := buildConfig(opts)
@@ -278,7 +289,7 @@ type rawGroupsResponse struct {
 // In local mode, returns the built-in system groups.
 func (c *Client) ListGroups(opts ...RequestOption) ([]GroupItem, error) {
 	if c.local {
-		return localListGroups(), nil
+		return c.localData().groups, nil
 	}
 
 	cfg := buildConfig(opts)
@@ -391,9 +402,30 @@ func parseGroupItem(data json.RawMessage) (*GroupItem, error) {
 // Local mode helpers
 // ---------------------------------------------------------------------------
 
-func localListMembers(params *ListMembersParams) *PaginatedMembers {
-	all := localmode.AllMembers()
+// localDirectory is the local-mode data set: the users file when there is
+// one, otherwise the built-in fixture members and groups.
+type localDirectory struct {
+	members []MemberItem
+	groups  []GroupItem
+	inGroup func(role, groupKey string) bool
+}
 
+func (c *Client) localData() *localDirectory {
+	if c.roster == nil {
+		var members []MemberItem
+		for _, m := range localmode.AllMembers() {
+			members = append(members, MemberItem{ID: m.ID, Email: m.Email, Name: m.Name, Role: m.Role})
+		}
+		return &localDirectory{members: members, groups: toGroupItems(localmode.FixtureGroups), inGroup: localmode.RoleInGroup}
+	}
+	members := make([]MemberItem, len(c.roster))
+	for i, u := range c.roster {
+		members[i] = MemberItem{ID: u.ID, Email: u.Email, Name: u.Name, Role: u.Role(), ImageURL: u.ImageURL}
+	}
+	return &localDirectory{members: members, groups: toGroupItems(localmode.RosterGroups), inGroup: localmode.InRosterGroup}
+}
+
+func (d *localDirectory) listMembers(params *ListMembersParams) *PaginatedMembers {
 	// Resolve the group filter once: GroupID is mapped to its key, an
 	// unknown id matches no group (groupUnmatched), and GroupKey is used
 	// directly. The HTTP path and ListMembers reject GroupID+GroupKey
@@ -403,17 +435,18 @@ func localListMembers(params *ListMembersParams) *PaginatedMembers {
 	if params != nil {
 		groupKey = params.GroupKey
 		if params.GroupID != "" {
-			if k, ok := localmode.GroupKeyByID(params.GroupID); ok {
-				groupKey = k
-			} else {
-				groupUnmatched = true
+			groupUnmatched = true
+			for _, g := range d.groups {
+				if g.ID == params.GroupID {
+					groupKey, groupUnmatched = *g.Key, false
+				}
 			}
 		}
 	}
 
 	// Apply filters.
 	var filtered []MemberItem
-	for _, m := range all {
+	for _, m := range d.members {
 		if params != nil {
 			if params.Q != "" {
 				q := strings.ToLower(params.Q)
@@ -428,13 +461,11 @@ func localListMembers(params *ListMembersParams) *PaginatedMembers {
 			if groupUnmatched {
 				continue
 			}
-			if groupKey != "" && !localmode.RoleInGroup(m.Role, groupKey) {
+			if groupKey != "" && !d.inGroup(m.Role, groupKey) {
 				continue
 			}
 		}
-		filtered = append(filtered, MemberItem{
-			ID: m.ID, Email: m.Email, Name: m.Name, Role: m.Role,
-		})
+		filtered = append(filtered, m)
 	}
 
 	limit := 25
@@ -476,12 +507,11 @@ func localListMembers(params *ListMembersParams) *PaginatedMembers {
 	}
 }
 
-func localGetUser(userID string) (*MemberItem, error) {
-	for _, m := range localmode.AllMembers() {
+func (d *localDirectory) getUser(userID string) (*MemberItem, error) {
+	for _, m := range d.members {
 		if m.ID == userID {
-			return &MemberItem{
-				ID: m.ID, Email: m.Email, Name: m.Name, Role: m.Role,
-			}, nil
+			found := m
+			return &found, nil
 		}
 	}
 	return nil, fmt.Errorf("directory.GetUser: %w", &httpclient.APIError{
@@ -492,9 +522,9 @@ func localGetUser(userID string) (*MemberItem, error) {
 	})
 }
 
-func localListGroups() []GroupItem {
-	groups := make([]GroupItem, len(localmode.FixtureGroups))
-	for i, g := range localmode.FixtureGroups {
+func toGroupItems(fixtures []localmode.FixtureGroup) []GroupItem {
+	groups := make([]GroupItem, len(fixtures))
+	for i, g := range fixtures {
 		var key *string
 		if g.Key != "" {
 			k := g.Key

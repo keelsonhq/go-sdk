@@ -48,7 +48,7 @@ import (
 const MaxObjectSizeBytes = 10 * 1024 * 1024
 
 const (
-	sdkUserAgent = "Keelson-Go-SDK/0.2.0"
+	sdkUserAgent = "Keelson-Go-SDK/0.2.1"
 	requestTO    = 30 * time.Second
 
 	defaultStorageBase = "https://storage.googleapis.com"
