@@ -2,7 +2,7 @@
 
 SDK guide: https://keelson.dev/docs/building-apps/sdk/
 
-Go SDK for building apps on the Keelson platform. Provides five packages:
+Go SDK for building apps on the Keelson platform. Provides six packages:
 
 > **Note**: This repository is a read-only release mirror. Development happens in the private Keelson monorepo; issues are welcome here, but pull requests are not accepted — changes land through the next release.
 
@@ -13,6 +13,7 @@ Go SDK for building apps on the Keelson platform. Provides five packages:
 | `media` | `github.com/keelsonhq/go-sdk/media` | Media storage (upload, serve by ID) |
 | `files` | `github.com/keelsonhq/go-sdk/files` | Data files (key-addressed, overwrite, private) |
 | `tasks` | `github.com/keelsonhq/go-sdk/tasks` | Background tasks (enqueue, get) |
+| `email` | `github.com/keelsonhq/go-sdk/email` | Outbound email and delivery event webhooks |
 
 Cross-language parity across Node, Python, and Go is defined by the
 [cross-SDK parity contract shipped in this repo](./PARITY.md). APIs below are
@@ -570,6 +571,119 @@ See the [cross-SDK parity contract shipped in this repo](./PARITY.md) for the fu
 
 ---
 
+## Email
+
+Send email to your app's users and receive delivery events (delivered /
+bounce / complaint). Keelson injects the endpoint, token, and webhook signing
+secret at deploy time; no `keelson.yaml` setting is needed. Full guide:
+https://keelson.dev/docs/building-apps/external-integrations/#send-email
+
+```go
+import "github.com/keelsonhq/go-sdk/email"
+
+client, err := email.New("", "") // reads env vars
+if err != nil { /* ... */ }
+
+text := "We received request 1234."
+resp, err := client.Send(&email.SendRequest{
+    To:      []string{"user@example.com"},
+    Subject: "Request received",
+    Text:    &text,
+})
+if err != nil { /* ... */ }
+// Store resp.SendID to match it with delivery events later
+fmt.Println(resp.SendID, resp.Status)
+```
+
+Sending rules:
+
+- The sender is always `<app-slug>@mail.keelson.run`. `FromName` and
+  `ReplyTo` can be set; custom sender domains are not available
+- Send only business communication to your app's users
+  ([Acceptable Use Policy](https://keelson.dev/aup/) 2.3). Marketing
+  campaigns and sending to people who do not use the app are not allowed
+- Up to 50 recipients per message (To + CC + BCC). At least one of `Text` or
+  `HTML` is required
+- Up to 30 sends per 60 seconds, per app and per workspace
+- Monthly recipient limits depend on the plan and are counted per app and per
+  workspace ([Plans and limits](https://keelson.dev/docs/workspace/plans-and-limits/))
+- Inbound email is not available
+
+A rejected send returns an error whose message includes the error code.
+
+| HTTP | Error code | Meaning |
+|------|------------|---------|
+| 400 | `RECIPIENT_SUPPRESSED` | A recipient is on the workspace suppression list |
+| 403 | `EMAIL_SENDING_SUSPENDED` | Sending is suspended for the workspace (too many permanent bounces or complaints). Contact Keelson to lift it |
+| 422 | `RECIPIENT_LIMIT_EXCEEDED` | More than 50 recipients |
+| 429 | `RATE_LIMIT_EXCEEDED` | 60-second send limit reached. Retry later |
+| 429 | `MONTHLY_QUOTA_EXCEEDED` | Monthly recipient limit reached |
+| 429 | `GLOBAL_RATE_LIMIT_EXCEEDED` / `GLOBAL_DAILY_QUOTA_EXCEEDED` | Platform-wide sending volume limit reached. Retry later |
+| 502 | `SEND_OUTCOME_UNKNOWN` | Outcome could not be confirmed; the message may have been sent. Do not retry automatically |
+
+### Delivery events
+
+Keelson posts signed delivery events to your app at
+`POST /api/webhooks/email-events`. Verify the signature with
+`KEELSON_EMAIL_WEBHOOK_SECRET`, then match the event to your send record with
+`SendID`.
+
+```go
+http.HandleFunc("POST /api/webhooks/email-events", func(w http.ResponseWriter, r *http.Request) {
+    event, err := email.VerifyEventWebhook(r, os.Getenv("KEELSON_EMAIL_WEBHOOK_SECRET"))
+    if err != nil {
+        http.Error(w, "invalid signature", http.StatusUnauthorized)
+        return
+    }
+    if event.EventType == "bounce" && event.BounceType != nil && *event.BounceType == "hard" {
+        // Look up the send by *event.SendID and mark event.EmailAddress invalid
+    }
+    w.WriteHeader(http.StatusNoContent)
+})
+```
+
+`EmailEventPayload` fields: `EventID`, `EventType` (`delivered` / `bounce` /
+`complaint`), `EmailAddress`, `SendID`, `BounceType` (`hard` / `soft`, bounces
+only), `Detail`, `Provider`, `Timestamp`. Delivery is at-least-once; use
+`EventID` to detect duplicates, or `VerifyEventWebhookOnce` with an
+`IdempotencyStore` backed by shared storage.
+
+Permanent bounces and complaints add the address to the workspace
+suppression list automatically, whether or not the app handles the event.
+After that, no app in the workspace can send to it (`RECIPIENT_SUPPRESSED`).
+Owners and Admins can review the list under Email in the console's workspace
+settings.
+
+A complete example with idempotent processing is in
+[`examples/email-webhook`](./examples/email-webhook).
+
+### Cross-language guaranteed API
+
+| Method | Description |
+|--------|-------------|
+| `New(baseURL, token) (*Client, error)` | Create client (falls back to env vars) |
+| `Send(req) (*SendResponse, error)` | Send an email; `SendResponse` has `SendID` and `Status` |
+| `email.VerifyEventWebhook(r, secret) (*EmailEventPayload, error)` | Verify Svix signature and parse event |
+| `email.VerifyEventWebhookBytes(body, headers, secret) (*EmailEventPayload, error)` | Verify event from pre-read body |
+| `email.VerifyEventWebhookOnce(r, secret, store) (*EmailEventPayload, ReserveResult, error)` | Verify and reserve the event in an `IdempotencyStore` |
+
+### Go-specific helpers
+
+| Method | Description |
+|--------|-------------|
+| `SendCtx(ctx, req) (*SendResponse, error)` | Send with context |
+
+### Environment variables
+
+| Variable | Description |
+|----------|-------------|
+| `KEELSON_EMAIL_API_URL` | Email API endpoint (injected) |
+| `KEELSON_EMAIL_TOKEN` | Bearer token for sending (injected) |
+| `KEELSON_EMAIL_WEBHOOK_SECRET` | Signing secret for delivery events (injected; pass it to `VerifyEventWebhook`) |
+| `KEELSON_EMAIL_BASE_URL` | Optional app-scoped endpoint. When `New` receives an empty base URL, the SDK prefers it over `KEELSON_EMAIL_API_URL` |
+
+---
+
 ## Development
 
 ```bash
@@ -581,6 +695,7 @@ go test ./media/
 go test ./identity/
 go test ./directory/
 go test ./tasks/
+go test ./email/
 
 # Build check (verify compilation)
 go build ./...
